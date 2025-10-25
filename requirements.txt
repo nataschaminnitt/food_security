@@ -1,0 +1,9 @@
+# conda or pip
+pandas
+numpy
+xgboost
+scikit-learn
+optuna
+joblib
+streamlit
+altair
