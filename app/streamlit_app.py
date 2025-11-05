@@ -3,7 +3,6 @@
 from __future__ import annotations
 import re
 from pathlib import Path
-
 import numpy as np
 import pandas as pd
 import plotly.express as px
@@ -11,14 +10,18 @@ import plotly.graph_objects as go
 import requests
 import streamlit as st
 
+st.cache_data.clear()
+
 
 # ------------------------------------------------------------------------------
 # Config / paths
 # ------------------------------------------------------------------------------
 
 st.set_page_config(
-    page_title="Ethiopia staples prices"
+    page_title="Ethiopia Food Prices Dashboard",
+    page_icon="🌾"
 )
+
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 ROOT = BASE_DIR
@@ -41,7 +44,7 @@ FOCUS_PRODUCTS = [
     "Wheat Grain",
     "Wheat Flour",
     "Rice (Milled)",
-    "Beans (Haricot)"
+    "Beans (Haricot)",
     "Maize Grain (White)",
     "Sorghum",
     "Mixed Teff",
@@ -78,12 +81,11 @@ def load_exploration_summaries():
 @st.cache_data(show_spinner="Loading panel…")
 def load_panel() -> pd.DataFrame:
     df = pd.read_parquet(PANEL_PATH)
+    df = df[df["product"].isin(FOCUS_PRODUCTS)].copy()
     # Make sure month is datetime
     if "month" in df.columns:
         df["month"] = pd.to_datetime(df["month"], errors="coerce")
     return df
-
-
 
 # ------------------------------------------------------------------------------
 # Helpers
@@ -103,78 +105,135 @@ def load_admin1_geojson():
         props["admin_key"] = _norm(region_name)
     return gj
 
+# ------------------------------------------------------------------------------
+# Page 0 – Landing / Summary
+# ------------------------------------------------------------------------------
+
+def render_landing_page():
+    st.markdown("""
+    Welcome to the **Ethiopia Food Prices Dashboard**, an interactive platform 
+    tracking and forecasting staple food prices across Ethiopian regions.
+
+    This dashboard provides:
+    - Historical and recent **market price trends** for key staples (wheat, maize, teff, beans, etc.).
+    - **Regional variations** in prices across Ethiopia’s administrative regions.
+    - **Forecasts** for staple prices based on historical data and machine learning models.
+
+    ---
+    **Note:** Data primarily comes from the World Food Programme’s VAM Data Repository (HDX), 
+    complemented by FEWS NET price series. Forecasting uses an XGBoost model with hybrid residual correction.
+    """)
+
 
 # ------------------------------------------------------------------------------
-# Page 1 – Data exploration
+# Page 1 – Methodology / Sources
 # ------------------------------------------------------------------------------
 
-def render_exploration_page() -> None:
-    nat_trends, regional_trends, map_summary, pivot_cv = load_exploration_summaries()
+def render_methodology_page():
+    st.markdown("## Methodology and Data Sources")
+
+    st.markdown("""
+    ### Data Sources
+    - **World Food Programme (WFP)** — Retail market price data via [HDX](https://data.humdata.org/dataset/2e4f1922-e446-4b57-a98a-d0e2d5e34afa).
+    - **FEWS NET** — Market price data through [FEWS NET’s API](https://fdw.fews.net/api/marketpricefacts.csv).
+    - **Official Exchange Rates** — Sourced from [Trading Economics](https://tradingeconomics.com/) for currency normalization.
+
+    ### Data Processing
+    - Both WFP and FEWS NET data are harmonized into a **FEWS-like schema** with columns:
+      `period_date`, `admin_1`, `market`, `product`, `unit`, `price_type`, `value`.
+    - Only **retail prices** and the **past five years** of data are retained.
+    - Units are normalized to a common basis (e.g., per kg, per liter).
+
+    ### Forecasting Model
+    - A **global XGBoost model** is trained on all available product-region combinations.
+    - A **per-product Ridge regression correction** (hybrid layer) refines residual biases.
+    - Forecasts are produced only for region–product pairs with **≥12 months** of training data.
+
+    ### Metrics
+    - **MAE**, **RMSE**, and **sMAPE** are used to evaluate model accuracy on the test set.
+
+    ### 💡 Data Availability
+    - Only regions with sufficient data coverage (≥12 months) are forecasted.
+    - The data availability visualization helps identify missing months by region/product.
+    """)
+
+    panel = load_panel()
 
     # Center content with margins on left/right
-    margin_left, main, margin_right = st.columns([0.08, 0.84, 0.08])
+    margin_left, main, margin_right = st.columns([0.01, 0.98, 0.01])
 
     with main:
-        
-        # ───────────────────────── Data availability visualisation ─────────────────────────
-
-        st.header("Data availability by region and product")
-
-        # Dropdown for region selection
+        # Region selection
         regions = sorted(panel["admin_1"].dropna().unique())
         default_region = "Addis Ababa" if "Addis Ababa" in regions else regions[0]
-        selected_admin = st.selectbox("Select region", options=regions, index=regions.index(default_region))
-
-        price_col = "value_imputed" if "value_imputed" in panel.columns else "value_mean"
-
-        # Prepare data
-        avail = (
-            panel.groupby(["admin_1", "month", "product"], as_index=False)[price_col]
-                .mean()
+        selected_admin = st.selectbox(
+            "Select region",
+            options=regions,
+            index=regions.index(default_region)
         )
 
-        # Extract selected region
+        # Pick a price column
+        if "value_imputed" in panel.columns:
+            price_col = "value_imputed"
+        elif "value_mean" in panel.columns:
+            price_col = "value_mean"
+        elif "value_median" in panel.columns:
+            price_col = "value_median"
+        else:
+            price_col = "value"
+
+        # Ensure month is datetime
+        panel = panel.copy()
+        panel["month"] = pd.to_datetime(panel["month"], errors="coerce")
+
+        # Aggregate to monthly mean per region/product
+        avail = (
+            panel.groupby(["admin_1", "month", "product"], as_index=False)[price_col]
+            .mean()
+        )
+
+        # Filter selected region
         region_df = avail[avail["admin_1"] == selected_admin].copy()
 
-        # Get full 5-year date range
+        # Full date range over panel
         full_months = pd.date_range(
             start=panel["month"].min(),
             end=panel["month"].max(),
             freq="MS"
         )
 
-        # Ensure all (month, product) combinations exist for this region
+        products_region = region_df["product"].dropna().unique()
         all_combos = pd.MultiIndex.from_product(
-            [full_months, region_df["product"].unique()],
+            [full_months, products_region],
             names=["month", "product"]
         ).to_frame(index=False)
 
         region_full = all_combos.merge(region_df, on=["month", "product"], how="left")
 
-        # Label data availability
         region_full["available"] = region_full[price_col].notna()
-
-        # Assign colors: green = data available, red = missing
         region_full["color"] = region_full["available"].map({True: "green", False: "red"})
+        region_full["avail_label"] = region_full["available"].map({True: "Yes", False: "No"})
 
         # Plotly scatter plot
         fig = go.Figure()
-
-        fig.add_trace(go.Scatter(
-            x=region_full["month"],
-            y=region_full["product"],
-            mode="markers",
-            marker=dict(
-                color=region_full["color"],
-                size=10,
-                line=dict(width=0),
-            ),
-            hovertemplate=(
-                "Month: %{x|%b %Y}<br>"
-                "Product: %{y}<br>"
-                "Data available: %{marker.color}<extra></extra>"
-            ),
-        ))
+        fig.add_trace(
+            go.Scatter(
+                x=region_full["month"],
+                y=region_full["product"],
+                mode="markers",
+                marker=dict(
+                    color=region_full["color"],
+                    size=10,
+                    line=dict(width=0),
+                ),
+                hovertemplate=(
+                    "Month: %{x|%b %Y}<br>"
+                    "Product: %{y}<br>"
+                    "Data available: %{customdata}<extra></extra>"
+                ),
+                customdata=region_full["avail_label"],
+            )
+        )
 
         fig.update_layout(
             title=f"Data availability (past 5 years) – {selected_admin}",
@@ -187,6 +246,20 @@ def render_exploration_page() -> None:
 
         st.plotly_chart(fig, use_container_width=True)
 
+    st.markdown("""
+    _Developed using Python, Streamlit, Plotly, and Scikit-learn._
+    """)
+
+# ------------------------------------------------------------------------------
+# Page 2 – Data exploration
+# ------------------------------------------------------------------------------
+
+def render_exploration_page(panel: pd.DataFrame) -> None:
+    nat_trends, regional_trends, map_summary, pivot_cv = load_exploration_summaries()
+
+    margin_left, main, margin_right = st.columns([0.01, 0.98, 0.01])
+
+    with main:
         
         # ───────────────────────── Product price trends ─────────────────────────
         st.markdown("### Product price trends")
@@ -380,7 +453,6 @@ def load_forecast_data():
         )
     if pred_test_col != "y_pred":
         test_df = test_df.rename(columns={pred_test_col: "y_pred"})
-    used_msgs.append(f"Test predictions: using '{pred_test_col}' as y_pred")
 
     pred_future_col = _pick_col(future_df, PRED_COL_CANDIDATES)
     if pred_future_col is None:
@@ -390,7 +462,6 @@ def load_forecast_data():
         )
     if pred_future_col != "y_pred":
         future_df = future_df.rename(columns={pred_future_col: "y_pred"})
-    used_msgs.append(f"Future predictions: using '{pred_future_col}' as y_pred")
 
     # ----- unify actuals in test -----
     actual_col = _pick_col(test_df, ACTUAL_COL_CANDIDATES)
@@ -402,7 +473,6 @@ def load_forecast_data():
     else:
         if actual_col != "y_actual":
             test_df = test_df.rename(columns={actual_col: "y_actual"})
-        used_msgs.append(f"Test actuals: using '{actual_col}' as y_actual")
 
     # basic column sanity
     req = {"admin_1", "product", "month"}
@@ -568,19 +638,41 @@ def render_forecasting_page():
 # ------------------------------------------------------------------------------
 
 def main():
-    panel = load_panel()   # ⬅️ now you *do* have panel
+    st.title("Ethiopia Food Prices Dashboard")
+    
+    # Load main panel for data-driven pages
+    panel = load_panel()
 
-    st.title("Food Prices in Ethiopia")
-    st.subheader("Data exploration and forecasting of staple product prices")
+    # Tabs
+    tab_home, tab_method, tab_exp, tab_fore = st.tabs([
+        "Summary",
+        "Methodology / Sources",
+        "Data Exploration",
+        "Data Forecasting"
+    ])
 
-    tab_exp, tab_fore = st.tabs(["Data exploration", "Data forecasting"])
+    with tab_home:
+        render_landing_page()
+
+    with tab_method:
+        render_methodology_page()
 
     with tab_exp:
-        render_exploration_page(panel)   # pass panel in
+        render_exploration_page(panel)
 
     with tab_fore:
-        render_forecasting_page(panel)   # or ignore panel here if not needed
+        render_forecasting_page()
+
+    # Footer (outside tab block)
+    st.markdown(
+        """
+        <hr style="margin-top:2em;margin-bottom:0.5em;">
+        <p style="text-align:center;color:gray;font-size:0.85em;">
+        Built by <b>Natascha Minnitt</b> · Data sources: WFP VAM, FEWS NET · Updated monthly
+        </p>
+        """,
+        unsafe_allow_html=True
+    )
 
 if __name__ == "__main__":
     main()
-
