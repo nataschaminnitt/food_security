@@ -31,7 +31,7 @@ from staples_model_core import (
 from model_utils import recursive_forecast
 
 
-PARQUET_PATH = "data/processed/ethiopia_foodprices_model_panel.parquet"
+PARQUET_PATH = "data/processed/ethiopia_foodprices_model_panel_tierA.parquet"
 OUTPUT_DIR   = Path("/Users/nataschajademinnitt/Documents/5_data/food_security/etl/artifacts")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
