@@ -210,3 +210,6 @@ __marimo__/
 *models/
 *.csv
 *.parquet
+*.png
+*figures/
+*.xlsx
