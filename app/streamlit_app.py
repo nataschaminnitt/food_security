@@ -102,144 +102,7 @@ def _norm(s: str) -> str:
     return re.sub(r"\s+", " ", str(s).strip()).lower()
 
 # ------------------------------------------------------------------------------
-# Page 0 – Landing / Summary
-# ------------------------------------------------------------------------------
-def render_landing_page():
-    st.markdown("""
-    Welcome to the **Ethiopia Food Prices Dashboard**, an interactive platform 
-    tracking and forecasting staple food prices across Ethiopian regions.
-
-    This dashboard provides:
-    - Historical and recent **market price trends** for key staples (wheat, maize, teff, beans, etc.).
-    - **Regional variations** in prices across Ethiopia’s administrative regions.
-    - **Forecasts** for staple prices based on historical data and machine learning models.
-
-    ---
-    **Note:** Data primarily comes from the World Food Programme’s VAM Data Repository (HDX), 
-    complemented by FEWS NET price series. Forecasting uses an XGBoost model with hybrid residual correction.
-    """)
-
-# ------------------------------------------------------------------------------
-# Page 1 – Methodology / Sources
-# ------------------------------------------------------------------------------
-def render_methodology_page():
-    st.markdown("## Methodology and Data Sources")
-
-    st.markdown("""
-    ### Data Sources
-    - **World Food Programme (WFP)** — Retail market price data via [HDX](https://data.humdata.org/dataset/2e4f1922-e446-4b57-a98a-d0e2d5e34afa).
-    - **FEWS NET** — Market price data through [FEWS NET’s API](https://fdw.fews.net/api/marketpricefacts.csv).
-    - **Official Exchange Rates** — Sourced from [Trading Economics](https://tradingeconomics.com/) for currency normalization.
-
-    ### Data Processing
-    - Both WFP and FEWS NET data are harmonized into a **FEWS-like schema** with columns:
-      `period_date`, `admin_1`, `market`, `product`, `unit`, `price_type`, `value`.
-    - Only **retail prices** and the **past five years** of data are retained.
-    - Units are normalized to a common basis (e.g., per kg, per liter).
-
-    ### Forecasting Model
-    - A **global XGBoost model** is trained on all available product-region combinations.
-    - A **per-product Ridge regression correction** (hybrid layer) refines residual biases.
-    - Forecasts are produced only for region–product pairs with **≥12 months** of training data.
-
-    ### Metrics
-    - **MAE**, **RMSE**, and **sMAPE** are used to evaluate model accuracy on the test set.
-
-    ### 💡 Data Availability
-    - Only regions with sufficient data coverage (≥12 months) are forecasted.
-    - The data availability visualization helps identify missing months by region/product.
-    """)
-
-    panel = load_panel()
-
-    # Center content with margins on left/right
-    margin_left, main, margin_right = st.columns([0.01, 0.98, 0.01])
-
-    with main:
-        # Region selection (unique key)
-        regions = sorted(panel["admin_1"].dropna().unique())
-        default_region = "Addis Ababa" if "Addis Ababa" in regions else regions[0]
-        selected_admin = st.selectbox(
-            "Select region",
-            options=regions,
-            index=regions.index(default_region),
-            key="method_region"
-        )
-
-        # Pick a price column
-        if "value_imputed" in panel.columns:
-            price_col = "value_imputed"
-        elif "value_mean" in panel.columns:
-            price_col = "value_mean"
-        elif "value_median" in panel.columns:
-            price_col = "value_median"
-        else:
-            price_col = "value"
-
-        panel = panel.copy()
-        panel["month"] = pd.to_datetime(panel["month"], errors="coerce")
-
-        # Aggregate to monthly mean per region/product
-        avail = (
-            panel.groupby(["admin_1", "month", "product"], as_index=False)[price_col]
-            .mean()
-        )
-
-        # Filter selected region
-        region_df = avail[avail["admin_1"] == selected_admin].copy()
-
-        # Full date range over panel
-        full_months = pd.date_range(
-            start=panel["month"].min(),
-            end=panel["month"].max(),
-            freq="MS"
-        )
-
-        products_region = region_df["product"].dropna().unique()
-        all_combos = pd.MultiIndex.from_product(
-            [full_months, products_region],
-            names=["month", "product"]
-        ).to_frame(index=False)
-
-        region_full = all_combos.merge(region_df, on=["month", "product"], how="left")
-
-        region_full["available"] = region_full[price_col].notna()
-        region_full["color"] = region_full["available"].map({True: "green", False: "red"})
-        region_full["avail_label"] = region_full["available"].map({True: "Yes", False: "No"})
-
-        fig = go.Figure()
-        fig.add_trace(
-            go.Scatter(
-                x=region_full["month"],
-                y=region_full["product"],
-                mode="markers",
-                marker=dict(color=region_full["color"], size=10, line=dict(width=0)),
-                hovertemplate=(
-                    "Month: %{x|%b %Y}<br>"
-                    "Product: %{y}<br>"
-                    "Data available: %{customdata}<extra></extra>"
-                ),
-                customdata=region_full["avail_label"],
-            )
-        )
-
-        fig.update_layout(
-            title=f"Data availability (past 5 years) – {selected_admin}",
-            xaxis_title="Month",
-            yaxis_title="Product",
-            height=450,
-            margin=dict(l=20, r=20, t=60, b=40),
-            yaxis=dict(categoryorder="category ascending"),
-        )
-
-        st.plotly_chart(fig, use_container_width=True)
-
-    st.markdown("""
-    _Developed using Python, Streamlit, Plotly, and Scikit-learn._
-    """)
-
-# ------------------------------------------------------------------------------
-# Page 2 – Data exploration (incl. STL admin × product)
+# Page 0 – Data exploration (incl. STL admin × product)
 # ------------------------------------------------------------------------------
 def render_exploration_page(panel: pd.DataFrame) -> None:
     nat_trends, regional_trends, map_summary, pivot_cv = load_exploration_summaries()
@@ -509,7 +372,7 @@ def render_exploration_page(panel: pd.DataFrame) -> None:
             st.plotly_chart(fig, use_container_width=True)
 
 # ------------------------------------------------------------------------------
-# Page 3 – Forecasting
+# Page 1 – Forecasting
 # ------------------------------------------------------------------------------
 @st.cache_data(show_spinner=False)
 def load_forecast_data():
@@ -693,24 +556,207 @@ def render_forecasting_page():
     st.plotly_chart(fig, use_container_width=True)
 
 # ------------------------------------------------------------------------------
+# Page 2 – Methodology / Sources
+# ------------------------------------------------------------------------------
+def render_methodology_page():
+    st.markdown("## Methodology")
+
+    st.markdown(
+    """
+### Data sources
+
+This dashboard combines multiple data sources to support robust exploration and forecasting of food prices. 
+The principal datasets are monthly staple food prices from the 
+[World Food Programme (WFP)](https://data.humdata.org/dataset/wfp-food-prices-for-ethiopia) 
+and the [Famine Early Warning Systems Network (FEWS NET)](https://fews.net/east-africa/ethiopia).
+
+Supplementary data include the [FAO Food Price Index](https://www.fao.org/worldfoodsituation/foodpricesindex/en/), 
+the [WFP Global Market Monitor](https://data.humdata.org/dataset/global-market-monitor), 
+[CHIRPS monthly rainfall](https://data.humdata.org/dataset/eth-rainfall-subnational), 
+[OCHA population estimates](https://data.humdata.org/dataset/cod-ps-eth), 
+[ACLED conflict events](https://data.humdata.org/dataset/ethiopia-acled-conflict-data), 
+and the [USD–ETB exchange rate (WFP VAM)](https://dataviz.vam.wfp.org/data-explorer/economic/exchange-rates).
+
+Most sources are updated monthly. An automated pipeline refreshes the dashboard at the start of each month. 
+Note that a **temporary pause** in early 2025 affected FEWS NET reporting; the FEWS NET Data Explorer currently includes the latest available data through January 2025.
+"""
+)
+
+    st.write("")
+
+    try:
+        PANEL_PATH = ROOT / "img"
+        logos = [
+            PANEL_PATH / "fewsnet.jpeg",
+            PANEL_PATH / "wfp.png",
+            PANEL_PATH / "fao.png",
+            PANEL_PATH / "ocha.png",
+            PANEL_PATH / "chirps.png",
+            PANEL_PATH / "acled.png",
+        ]
+
+        cols = st.columns(len(logos))
+        for col, path in zip(cols, logos):
+            with col:
+                st.image(str(path), use_container_width=True)
+
+    except Exception:
+        st.caption("Logos unavailable.")
+
+
+    st.markdown(
+    """
+### Data processing
+
+We standardize units (per kg/liter), retain **retail prices**, and keep the **past five years**. 
+For missing observations, we impute prices in three steps and record both the original value and the method used:
+
+1) **Temporal interpolation (on log prices).**  
+   For each region and product, if a few months are missing, we estimate the price by drawing a smooth line between nearby months. 
+   We only fill short gaps (up to 2 months) and never make up values before the first or after the last real data point.
+
+2) **Scaled national fallback.**  
+   If a value is still missing, we estimate it as *(region’s typical ratio to the national median) × (national median for that month)*, 
+   where the ratio is the median of region/national over periods with data.
+
+3) **Cross-region same-month median.**  
+   If still missing, we use the median across all regions for that product–unit in the same month.
+
+For each record we keep: `value_orig` (observed), `value_imputed` (final series), and `impute_method` 
+(one of: `observed`, `interp_time`, `scaled_national`, `cross_admin`). Imputed points add uncertainty; we surface this in forecast intervals and require ≥12 months of data for forecasting.
+"""
+)
+
+    st.markdown(
+        """
+### Data availability
+
+- We generate forecasts only for region–product pairs with **≥ 12 months** of observations.  
+- The visualization below shows months with/without data for each product in the selected region.
+"""
+    )
+
+    panel = load_panel()
+    panel["month"] = pd.to_datetime(panel["month"], errors="coerce")
+
+    # --- Region picker (defines selected_admin) ---
+    regions = sorted(panel["admin_1"].dropna().unique())
+    if not regions:
+        st.warning("No regions found in the data.")
+        st.stop()
+
+    default_region = "Addis Ababa" if "Addis Ababa" in regions else regions[0]
+    selected_admin = st.selectbox(
+        "Select region",
+        options=regions,
+        index=regions.index(default_region),
+        key="method_region"
+    )
+
+    # --- Keep both original and imputed so we can classify status ---
+    avail = (
+        panel.groupby(["admin_1", "month", "product"], as_index=False)[["value_orig", "value_imputed"]]
+            .mean()
+    )
+
+    # --- Filter selected region ---
+    region_df = avail[avail["admin_1"] == selected_admin].copy()
+
+    # --- Build full monthly grid for the selected region across its products ---
+    full_months = pd.date_range(start=panel["month"].min(), end=panel["month"].max(), freq="MS")
+    products_region = region_df["product"].dropna().unique()
+    if len(products_region) == 0:
+        st.info(f"No products found for {selected_admin}.")
+        st.stop()
+
+    all_combos = pd.MultiIndex.from_product(
+        [full_months, products_region],
+        names=["month", "product"]
+    ).to_frame(index=False)
+
+    region_full = all_combos.merge(region_df, on=["month", "product"], how="left")
+
+    # --- Classify status: green observed, blue imputed, red missing ---
+    observed = region_full["value_orig"].notna()
+    imputed  = region_full["value_imputed"].notna() & ~observed
+    missing  = region_full["value_imputed"].isna()
+
+    region_full["status"] = np.select(
+        [observed, imputed, missing],
+        ["Observed", "Imputed", "Missing"],
+        default="Missing"
+    )
+
+    color_map = {"Observed": "green", "Imputed": "blue", "Missing": "red"}
+
+    # --- Plot (one trace per status so you get a legend) ---
+    fig = go.Figure()
+    for name, color in color_map.items():
+        df_ = region_full[region_full["status"] == name]
+        if df_.empty:
+            continue
+        fig.add_trace(
+            go.Scatter(
+                x=df_["month"],
+                y=df_["product"],
+                mode="markers",
+                name=name,
+                marker=dict(color=color, size=10, line=dict(width=0)),
+                hovertemplate="Month: %{x|%b %Y}<br>Product: %{y}<br>Status: " + name + "<extra></extra>",
+            )
+        )
+
+    fig.update_layout(
+        title=f"Data availability (past 5 years) – {selected_admin}",
+        xaxis_title="Month",
+        yaxis_title="Product",
+        height=450,
+        margin=dict(l=20, r=20, t=60, b=40),
+        yaxis=dict(categoryorder="category ascending"),
+        legend=dict(orientation="h", yanchor="bottom", y=-0.3, xanchor="left", x=0.25),
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
+
+
+
+    st.markdown(
+        """
+### Forecasting model
+
+- A **global XGBoost** model is trained on all region–product pairs.  
+- A **per-product Ridge regression** “bias-correction” layer refines residual errors.  
+- Forecasts are produced only for pairs with **≥ 12 months** of training data.
+
+### Metrics and confidence intervals
+
+We evaluate performance on a hold-out test set using:
+
+- **MAE (Mean Absolute Error):** average absolute difference between predictions and actual prices (lower is better).  
+- **RMSE (Root Mean Squared Error):** emphasizes larger errors (lower is better).  
+- **sMAPE (Symmetric Mean Absolute Percentage Error):** scale-free percentage error robust to zeros (lower is better).
+
+We display an **80% confidence interval (CI)** around forecasts, meaning that under model assumptions, roughly 4 out of 5 realized values are expected to fall within the shaded band. Narrower bands indicate higher certainty; wider bands indicate greater uncertainty.
+"""
+    )
+
+# ------------------------------------------------------------------------------
 # Main app
 # ------------------------------------------------------------------------------
 def main():
-    st.title("Ethiopia Food Prices Dashboard")
+    st.title("🌾 Ethiopia Food Prices Dashboard")
+    st.markdown("#### An interactive dashboard to track and forecast staple food prices across regions in Ethiopia.")
+
     
     # Load main panel for data-driven pages
     panel = load_panel()
 
     # Tabs
-    tab_home, tab_method, tab_exp, tab_fore = st.tabs([
-        "Summary",
-        "Methodology / Sources",
-        "Data Exploration",
-        "Data Forecasting"
+    tab_exp, tab_fore, tab_method = st.tabs([
+        "Exploration",
+        "Forecasting",
+        "Methodology",
     ])
-
-    with tab_home:
-        render_landing_page()
 
     with tab_method:
         render_methodology_page()
@@ -726,7 +772,7 @@ def main():
         """
         <hr style="margin-top:2em;margin-bottom:0.5em;">
         <p style="text-align:center;color:gray;font-size:0.85em;">
-        Built by <b>Natascha Minnitt</b> · Data sources: WFP VAM, FEWS NET · Updated monthly
+        Built by <b>Natascha Minnitt</b> · Updated monthly
         </p>
         """,
         unsafe_allow_html=True
