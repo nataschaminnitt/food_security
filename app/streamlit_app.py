@@ -6,11 +6,14 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import requests
+import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from statsmodels.tsa.seasonal import STL
-import streamlit as st
+import matplotlib.pyplot as plt
+from statsmodels.graphics.tsaplots import month_plot, plot_pacf
+
 
 st.cache_data.clear()
 
@@ -101,6 +104,55 @@ def load_admin1_geojson():
 def _norm(s: str) -> str:
     return re.sub(r"\s+", " ", str(s).strip()).lower()
 
+def prep_monthly_series(df, product, region=None, value_col="value_imputed"):
+    """Monthly Series averaged across admins for a product (optional region)."""
+    d = df[df["product"].eq(product)].copy()
+    if region is not None:
+        d = d[d["admin_1"].eq(region)]
+    d["month"] = pd.to_datetime(d["month"], errors="coerce")
+    s = (
+        d.set_index("month")[value_col]
+         .sort_index()
+         .resample("MS").mean()
+         .dropna()
+    )
+    return s
+
+def month_plot_mpl(s, ylabel="Price (ETB)"):
+    """Matplotlib month_plot figure (one line per year, red monthly mean)."""
+    s = s.dropna()
+    fig, ax = plt.subplots(figsize=(7.2, 3.8))
+    month_plot(s, ax=ax, ylabel=ylabel)  # statsmodels classic
+    ax.set_title("Seasonality by Month")
+    ax.set_xlabel("Month")
+    fig.tight_layout()
+    return fig
+
+def pacf_mpl(s, nlags=40):
+    """Matplotlib PACF with safe lag cap and 95% CI."""
+    s = s.dropna()
+    fig, ax = plt.subplots(figsize=(7.2, 3.2))
+
+    n = len(s)
+    if n < 5:
+        ax.set_title("Partial Autocorrelation")
+        ax.text(0.5, 0.5, "Not enough data", ha="center", va="center", transform=ax.transAxes)
+        ax.set_axis_off()
+        fig.tight_layout()
+        return fig
+
+    # statsmodels requires nlags < n/2
+    max_allowed = max(1, (n // 2) - 1)
+    use_lags = min(nlags, max_allowed)
+
+    plot_pacf(s, lags=use_lags, ax=ax, method="ywm", alpha=0.05)
+    ax.set_title("Partial Autocorrelation")
+    ax.set_ylabel("Partial autocorrelation")
+    ax.set_xlabel("Lag (months)")
+    fig.tight_layout()
+    return fig
+
+
 # ------------------------------------------------------------------------------
 # Page 0 – Data exploration (incl. STL admin × product)
 # ------------------------------------------------------------------------------
@@ -112,6 +164,13 @@ def render_exploration_page(panel: pd.DataFrame) -> None:
     with main:
         # ───────────────────────── Product price trends ─────────────────────────
         st.markdown("### Product price trends")
+        st.markdown(
+            """
+            **What this shows:** How prices have moved over time.  
+            **How to read it:** Use the toggles to switch between the **national median** (one line per product) and a **regional view** (one region at a time). 
+            Look for steady rises/falls or sharp jumps—those often reflect shocks or data gaps.
+            """
+        )
 
         selected_products = st.multiselect(
             "Select products",
@@ -163,9 +222,16 @@ def render_exploration_page(panel: pd.DataFrame) -> None:
                                     legend_title_text="Product")
 
         st.plotly_chart(fig_trend, use_container_width=True)
+        st.divider()
 
         # ───────────────────────── Map: average prices by region ─────────────────────────
         st.markdown("### Average prices by region")
+        st.markdown(
+            """
+            **What this shows:** Where prices are higher or lower across regions for a selected product.  
+            **How to read it:** Darker areas mean higher prices. Compare neighboring regions to spot persistent spatial differences.
+            """
+        )
 
         map_product = st.selectbox(
             "Product for map",
@@ -192,7 +258,7 @@ def render_exploration_page(panel: pd.DataFrame) -> None:
                 locations="admin_key",
                 color="median_price",
                 featureidkey="properties.admin_key",
-                color_continuous_scale="Viridis",
+                color_continuous_scale=px.colors.sequential.Viridis_r,
                 mapbox_style="open-street-map",
                 zoom=5.5,
                 center={"lat": 9.145, "lon": 40.489},
@@ -200,14 +266,26 @@ def render_exploration_page(panel: pd.DataFrame) -> None:
                 labels={"median_price": "Median price (ETB)"},
             )
             fig_map.update_layout(
+                mapbox=dict(
+                    center={"lat": 9.145, "lon": 40.489},  # Ethiopia centroid-ish
+                    zoom=4.2                                # smaller number = further out (e.g., 4.0–4.5)
+                ),
                 height=500,
                 margin=dict(l=0, r=0, t=40, b=0),
                 title=f"Median {map_product} price by region",
             )
             st.plotly_chart(fig_map, use_container_width=True)
+        st.divider()
 
         # ───────────────────────── Price stability heatmap ─────────────────────────
         st.markdown("### Price stability by region and product")
+        st.markdown(
+            """
+            **What this shows:** The coefficient of variation (CV) tells us how volatile the prices are over a 5-year window.
+            It allows us to identify products/regions where prices swing a lot, which creates a risk for households and forecasting. 
+            **How to read it:** :green[green] = more stable, :red[red] = more volatile.
+            """
+        )
 
         if pivot_cv.empty:
             st.warning("Not enough data to compute stability (CV) yet.")
@@ -233,9 +311,89 @@ def render_exploration_page(panel: pd.DataFrame) -> None:
         )
 
         st.plotly_chart(fig_cv, use_container_width=True)
+        st.divider()
+
+        # ───────────────────────── Seasonality & PACF ─────────────────────────
+        st.markdown("### Seasonality")
+        st.markdown(
+            """
+            **What this shows:**   
+            **How to read it:** Each vertical black line presents the aggregated data for a given month across all the years.
+            The horizontal red bars shows the average price by month across years. If the red bars are higher in the same months each year, there’s a seasonal pattern.  
+            """
+        )
+
+        # Optional region filter (None = average across regions)
+        all_regions = sorted(panel["admin_1"].dropna().unique())
+        region_opt = st.selectbox("Filter by region (optional)", ["(All regions)"] + all_regions)
+        region_sel = None if region_opt == "(All regions)" else region_opt
+
+        products = [
+            'Maize Grain (White)', 'Mixed Teff', 'Refined sugar', 'Sorghum',
+            'Wheat Grain', 'Beans (Haricot)', 'Refined Vegetable Oil',
+            'Rice (Milled)', 'Wheat Flour'
+        ]
+
+        tabs = st.tabs(products)
+        for tab, p in zip(tabs, products):
+            with tab:
+                s = prep_monthly_series(panel, product=p, region=region_sel, value_col="value_imputed")
+
+                # Month plot (own figure)
+                fig_m = month_plot_mpl(s)
+                st.pyplot(fig_m, clear_figure=True)
+
+                # PACF (separate figure)
+                fig_p = pacf_mpl(s, nlags=40)
+                st.pyplot(fig_p, clear_figure=True)
+        st.divider()
+
+        # ───────────────────────── PACF ─────────────────────────
+        st.markdown("### Partial Autocorrelation")
+        st.markdown(
+            """
+            **What this shows:** The partial autocorrelation plot examines the correlation between a data point and its prior observations without taking into account the effect of the intervening time steps. 
+            **How to read it:** Bars outside the shaded band are statistically significant; spikes at lag 12 suggest annual seasonality.
+            """
+        )
+
+        products = [
+                    'Maize Grain (White)', 'Mixed Teff', 'Refined sugar', 'Sorghum',
+                    'Wheat Grain', 'Beans (Haricot)', 'Refined Vegetable Oil',
+                    'Rice (Milled)', 'Wheat Flour'
+                ]
+
+        # Optional region filter (None = average across regions)
+        all_regions = sorted(panel["admin_1"].dropna().unique())
+        region_opt = st.selectbox("Filter by region (optional)", ["(All regions)"] + all_regions, key="expl_region_filter")
+        region_sel = None if region_opt == "(All regions)" else region_opt
+
+        tabs = st.tabs(products)
+        for tab, p in zip(tabs, products):
+            with tab:
+                s = prep_monthly_series(panel, product=p, region=region_sel, value_col="value_imputed")
+
+                # Month plot (own figure)
+                fig_m = month_plot_mpl(s)
+                st.pyplot(fig_m, clear_figure=True)
+
+                # PACF (separate figure)
+                fig_p = pacf_mpl(s, nlags=40)
+                st.pyplot(fig_p, clear_figure=True)
+        st.divider()
 
         # ───────────────────────── Seasonal decomposition (admin × product) ─────────────────────────
         st.markdown("### Seasonal decomposition (admin × product)")
+        st.markdown(
+            """
+            **What this shows:** An additive split of the series into **seasonal**, **trend**, and **remainder** (noise) on a log scale.  
+            **How to read it:**  
+            - A strong repeating shape in *Seasonal* confirms seasonality.  
+            - A smooth *Trend* indicates longer-term movement.  
+            - Large *Remainder* swings can signal shocks, outliers, or missing data.  
+            Tip: toggle **“National median”** to view the national signal, or pick a region/product to focus locally.
+            """
+        )
 
         colc1, colc2, colc3, colc4 = st.columns([1.2, 1.2, 1, 1])
         period = colc1.number_input("Seasonal period", min_value=2, max_value=60, value=12, step=1, key="expl_stl_period")
@@ -370,6 +528,7 @@ def render_exploration_page(panel: pd.DataFrame) -> None:
             fig.update_yaxes(title_text="remainder", row=4, col=1)
 
             st.plotly_chart(fig, use_container_width=True)
+
 
 # ------------------------------------------------------------------------------
 # Page 1 – Forecasting
@@ -585,21 +744,19 @@ Note that a **temporary pause** in early 2025 affected FEWS NET reporting; the F
     st.write("")
 
     try:
-        PANEL_PATH = ROOT / "img"
+        IMG_DIR = ROOT / "img"
         logos = [
-            PANEL_PATH / "fewsnet.jpeg",
-            PANEL_PATH / "wfp.png",
-            PANEL_PATH / "fao.png",
-            PANEL_PATH / "ocha.png",
-            PANEL_PATH / "chirps.png",
-            PANEL_PATH / "acled.png",
+            IMG_DIR / "fewsnet.jpeg",
+            IMG_DIR / "wfp.png",
+            IMG_DIR / "fao.png",
+            IMG_DIR / "ocha.png",
+            IMG_DIR / "chirps.png",
+            IMG_DIR / "acled.png",
         ]
-
         cols = st.columns(len(logos))
         for col, path in zip(cols, logos):
             with col:
                 st.image(str(path), use_container_width=True)
-
     except Exception:
         st.caption("Logos unavailable.")
 
