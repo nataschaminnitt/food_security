@@ -11,3 +11,4 @@ plotly
 requests
 statsmodels
 matplotlib
+pyarrow

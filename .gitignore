@@ -209,7 +209,5 @@ __marimo__/
 *artifacts/
 *models/
 *.csv
-*.parquet
-*.png
 *figures/
 *.xlsx
