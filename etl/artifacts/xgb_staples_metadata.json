@@ -1,0 +1,24 @@
+{
+  "timestamp": "2025-11-07T14:40:39.198531",
+  "test_horizon_months": 6,
+  "forecast_horizon_months": 6,
+  "optuna_trials": 40,
+  "best_params": {
+    "n_estimators": 480,
+    "learning_rate": 0.14807808537545358,
+    "max_depth": 10,
+    "min_child_weight": 0.9787929122708023,
+    "subsample": 0.778607362663736,
+    "colsample_bytree": 0.8190045463093584,
+    "gamma": 0.13941224008800593,
+    "reg_alpha": 1.5317812567282417e-06,
+    "reg_lambda": 4.165907277556408e-06,
+    "tree_method": "hist",
+    "random_state": 42,
+    "n_jobs": -1,
+    "eval_metric": "rmse"
+  },
+  "n_train": 2216,
+  "n_test": 232,
+  "n_test_eligible": 232
+}
