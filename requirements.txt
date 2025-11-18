@@ -7,3 +7,7 @@ optuna
 joblib
 streamlit
 altair
+plotly
+requests
+statsmodels
+matplotlib

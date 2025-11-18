@@ -8,7 +8,7 @@ from sklearn.metrics import mean_squared_error
 import optuna
 from xgboost import XGBRegressor
 
-TEST_HORIZON_MONTHS = 6
+TEST_HORIZON_MONTHS = 3
 N_TRIALS = 40
 SEED = 42
 
