@@ -206,7 +206,12 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
-*artifacts/
+xgb_staples_features.json
+xgb_staples_future_forecast.parquet
+xgb_staples_hybrid_models.joblib
+xgb_staples_last_history.parquet
+xgb_staples_metadata.json
+xgb_staples_model.joblib
 *models/
 *.csv
 *figures/
