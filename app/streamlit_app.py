@@ -105,7 +105,7 @@ def _norm(s: str) -> str:
     return re.sub(r"\s+", " ", str(s).strip()).lower()
 
 def prep_monthly_series(df, product, region=None, value_col="value_imputed"):
-    """Monthly Series averaged across admins for a product (optional region)."""
+    """Monthly Series averaged across admins for a product."""
     d = df[df["product"].eq(product)].copy()
     if region is not None:
         d = d[d["admin_1"].eq(region)]
@@ -162,372 +162,390 @@ def render_exploration_page(panel: pd.DataFrame) -> None:
     margin_left, main, margin_right = st.columns([0.01, 0.98, 0.01])
 
     with main:
+        st.header("Exploration")
         # ───────────────────────── Product price trends ─────────────────────────
-        st.markdown("### Product price trends")
-        st.markdown(
-            """
-            **What this shows:** How prices have moved over time.  
-            **How to read it:** Use the toggles to switch between the **national median** (one line per product) and a **regional view** (one region at a time). 
-            Look for steady rises/falls or sharp jumps—those often reflect shocks or data gaps.
-            """
-        )
+        with st.expander("Product price trends", expanded=False):
+            st.markdown(
+                """
+                **What this shows:** How prices have changed over time.  
 
-        selected_products = st.multiselect(
-            "Select products",
-            options=FOCUS_PRODUCTS,
-            default=FOCUS_PRODUCTS,
-            key="expl_products"
-        )
-
-        view_mode = st.radio(
-            "View mode",
-            ["National median across regions", "Regional breakdown"],
-            index=0,
-            horizontal=True,
-            key="expl_viewmode"
-        )
-
-        if view_mode == "National median across regions":
-            ts = nat_trends[nat_trends["product"].isin(selected_products)].copy()
-            ts = ts.sort_values(["product", "month"])
-
-            fig_trend = px.line(
-                ts, x="month", y="price", color="product", markers=True,
-                labels={"month": "Month", "price": "Price (ETB)", "product": "Product"},
-            )
-            fig_trend.update_layout(height=450, title="National median prices across regions",
-                                    legend_title_text="Product")
-
-        else:
-            regions = regional_trends["admin_1"].dropna().sort_values().unique().tolist()
-            default_region = "Addis Ababa" if "Addis Ababa" in regions else regions[0]
-
-            region = st.selectbox(
-                "Choose region",
-                options=regions,
-                index=regions.index(default_region),
-                key="expl_trend_region"
+                **How to read it:**  
+                - Choose one or more products.  
+                - Switch between the **national view** (one line per product, showing the typical price across regions) and a **single-region view**.  
+                - Steady climbs or drops show long-term changes.  
+                - Sudden jumps often reflect shocks (for example, a bad harvest or conflict) or gaps in the data.
+                """
             )
 
-            ts = regional_trends[
-                (regional_trends["admin_1"] == region)
-                & (regional_trends["product"].isin(selected_products))
-            ].copy().sort_values("month")
-
-            fig_trend = px.line(
-                ts, x="month", y="price", color="product", markers=True,
-                labels={"month": "Month", "price": "Price (ETB)", "product": "Product"},
+            selected_products = st.multiselect(
+                "Select products",
+                options=FOCUS_PRODUCTS,
+                default=FOCUS_PRODUCTS,
+                key="expl_products"
             )
-            fig_trend.update_layout(height=450, title=f"Prices in {region}",
-                                    legend_title_text="Product")
 
-        st.plotly_chart(fig_trend, use_container_width=True)
-        st.divider()
+            view_mode = st.radio(
+                "View mode",
+                ["National median across regions", "Regional breakdown"],
+                index=0,
+                horizontal=True,
+                key="expl_viewmode"
+            )
+
+            if view_mode == "National median across regions":
+                ts = nat_trends[nat_trends["product"].isin(selected_products)].copy()
+                ts = ts.sort_values(["product", "month"])
+
+                fig_trend = px.line(
+                    ts, x="month", y="price", color="product", markers=True,
+                    labels={"month": "Month", "price": "Price (ETB)", "product": "Product"},
+                )
+                fig_trend.update_layout(height=450, title="National median prices across regions",
+                                        legend_title_text="Product")
+
+            else:
+                regions = regional_trends["admin_1"].dropna().sort_values().unique().tolist()
+                default_region = "Addis Ababa" if "Addis Ababa" in regions else regions[0]
+
+                region = st.selectbox(
+                    "Choose region",
+                    options=regions,
+                    index=regions.index(default_region),
+                    key="expl_trend_region"
+                )
+
+                ts = regional_trends[
+                    (regional_trends["admin_1"] == region)
+                    & (regional_trends["product"].isin(selected_products))
+                ].copy().sort_values("month")
+
+                fig_trend = px.line(
+                    ts, x="month", y="price", color="product", markers=True,
+                    labels={"month": "Month", "price": "Price (ETB)", "product": "Product"},
+                )
+                fig_trend.update_layout(height=450, title=f"Prices in {region}",
+                                        legend_title_text="Product")
+
+            st.plotly_chart(fig_trend, use_container_width=True)
+            st.divider()
 
         # ───────────────────────── Map: average prices by region ─────────────────────────
-        st.markdown("### Average prices by region")
-        st.markdown(
-            """
-            **What this shows:** Where prices are higher or lower across regions for a selected product.  
-            **How to read it:** Darker areas mean higher prices. Compare neighboring regions to spot persistent spatial differences.
-            """
-        )
+        with st.expander("Average prices by region", expanded=False):
+            st.markdown(
+                """
+                **What this shows:** Where this product is cheaper or more expensive across regions.  
 
-        map_product = st.selectbox(
-            "Product for map",
-            options=FOCUS_PRODUCTS,
-            index=FOCUS_PRODUCTS.index("Maize Grain (White)") if "Maize Grain (White)" in FOCUS_PRODUCTS else 0,
-            key="expl_map_product"
-        )
-
-        admin1_geojson = load_admin1_geojson()
-
-        map_df = (
-            map_summary[map_summary["product"] == map_product]
-            .copy()
-            .rename(columns={"median_price": "median_price"})
-        )
-        map_df["admin_key"] = map_df["admin_1"].map(_norm)
-
-        if map_df.empty:
-            st.warning(f"No data found for product: {map_product}")
-        else:
-            fig_map = px.choropleth_mapbox(
-                map_df,
-                geojson=admin1_geojson,
-                locations="admin_key",
-                color="median_price",
-                featureidkey="properties.admin_key",
-                color_continuous_scale=px.colors.sequential.Viridis_r,
-                mapbox_style="open-street-map",
-                zoom=5.5,
-                center={"lat": 9.145, "lon": 40.489},
-                opacity=0.7,
-                labels={"median_price": "Median price (ETB)"},
+                **How to read it:**  
+                - Each area on the map is a region.  
+                - Darker colours mean higher prices; lighter colours mean lower prices.  
+                - Compare neighbouring regions to spot places where this product is consistently more costly.
+                """
             )
-            fig_map.update_layout(
-                mapbox=dict(
-                    center={"lat": 9.145, "lon": 40.489},  # Ethiopia centroid-ish
-                    zoom=4.2                                # smaller number = further out (e.g., 4.0–4.5)
-                ),
-                height=500,
-                margin=dict(l=0, r=0, t=40, b=0),
-                title=f"Median {map_product} price by region",
+
+            map_product = st.selectbox(
+                "Product for map",
+                options=FOCUS_PRODUCTS,
+                index=FOCUS_PRODUCTS.index("Maize Grain (White)") if "Maize Grain (White)" in FOCUS_PRODUCTS else 0,
+                key="expl_map_product"
             )
-            st.plotly_chart(fig_map, use_container_width=True)
-        st.divider()
+
+            admin1_geojson = load_admin1_geojson()
+
+            map_df = (
+                map_summary[map_summary["product"] == map_product]
+                .copy()
+                .rename(columns={"median_price": "median_price"})
+            )
+            map_df["admin_key"] = map_df["admin_1"].map(_norm)
+
+            if map_df.empty:
+                st.warning(f"No data found for product: {map_product}")
+            else:
+                fig_map = px.choropleth_mapbox(
+                    map_df,
+                    geojson=admin1_geojson,
+                    locations="admin_key",
+                    color="median_price",
+                    featureidkey="properties.admin_key",
+                    color_continuous_scale=px.colors.sequential.Viridis_r,
+                    mapbox_style="open-street-map",
+                    zoom=5.5,
+                    center={"lat": 9.145, "lon": 40.489},
+                    opacity=0.7,
+                    labels={"median_price": "Median price (ETB)"},
+                )
+                fig_map.update_layout(
+                    mapbox=dict(
+                        center={"lat": 9.145, "lon": 40.489},  # Ethiopia centroid-ish
+                        zoom=4.2                                # smaller number = further out (e.g., 4.0–4.5)
+                    ),
+                    height=500,
+                    margin=dict(l=0, r=0, t=40, b=0),
+                    title=f"Median {map_product} price by region",
+                )
+                st.plotly_chart(fig_map, use_container_width=True)
+            st.divider()
 
         # ───────────────────────── Price stability heatmap ─────────────────────────
-        st.markdown("### Price stability by region and product")
-        st.markdown(
-            """
-            **What this shows:** The coefficient of variation (CV) tells us how volatile the prices are over a 5-year window.
-            It allows us to identify products/regions where prices swing a lot, which creates a risk for households and forecasting. 
-            **How to read it:** :green[green] = more stable, :red[red] = more volatile.
-            """
-        )
+        with st.expander("Price stability by region and product", expanded=False):
+            st.markdown(
+                """
+                **What this shows:** How stable or unstable prices have been over the last 5 years. We summarise this in a stability score (also called the *coefficient of variation*), which compares how much prices move around to their average level.  
 
-        if pivot_cv.empty:
-            st.warning("Not enough data to compute stability (CV) yet.")
-            return
+                **How to read it:**  
+                - :green[Green] cells = more stable prices (they don’t move much).  
+                - :red[Red] cells = more unstable prices (they swing a lot). Red areas highlight products and regions where households face more risk and where forecasting is harder.
+                """
+            )
 
-        pivot_cv_local = pivot_cv.copy()
-        cols_order = [p for p in FOCUS_PRODUCTS if p in pivot_cv_local.columns] + [
-            c for c in pivot_cv_local.columns if c not in FOCUS_PRODUCTS
-        ]
-        pivot_cv_local = pivot_cv_local[cols_order]
+            if pivot_cv.empty:
+                st.warning("Not enough data to compute stability (CV) yet.")
+                return
 
-        fig_cv = px.imshow(
-            pivot_cv_local,
-            color_continuous_scale="RdYlGn_r",  # red = volatile, green = stable
-            aspect="auto",
-            labels=dict(color="Coefficient of variation"),
-        )
-        fig_cv.update_layout(
-            height=500,
-            title="Coefficient of variation (price stability) by region and product",
-            xaxis_title="Product",
-            yaxis_title="Region",
-        )
+            pivot_cv_local = pivot_cv.copy()
+            cols_order = [p for p in FOCUS_PRODUCTS if p in pivot_cv_local.columns] + [
+                c for c in pivot_cv_local.columns if c not in FOCUS_PRODUCTS
+            ]
+            pivot_cv_local = pivot_cv_local[cols_order]
 
-        st.plotly_chart(fig_cv, use_container_width=True)
-        st.divider()
+            fig_cv = px.imshow(
+                pivot_cv_local,
+                color_continuous_scale="RdYlGn_r",  # red = volatile, green = stable
+                aspect="auto",
+                labels=dict(color="Coefficient of variation"),
+            )
+            fig_cv.update_layout(
+                height=500,
+                title="Coefficient of variation (price stability) by region and product",
+                xaxis_title="Product",
+                yaxis_title="Region",
+            )
 
-        # ───────────────────────── Seasonality & PACF ─────────────────────────
-        st.markdown("### Seasonality")
-        st.markdown(
-            """
-            **What this shows:**   
-            **How to read it:** Each vertical black line presents the aggregated data for a given month across all the years.
-            The horizontal red bars shows the average price by month across years. If the red bars are higher in the same months each year, there’s a seasonal pattern.  
-            """
-        )
+            st.plotly_chart(fig_cv, use_container_width=True)
+            st.divider()
 
-        # Optional region filter (None = average across regions)
-        all_regions = sorted(panel["admin_1"].dropna().unique())
-        region_opt = st.selectbox("Filter by region (optional)", ["(All regions)"] + all_regions)
-        region_sel = None if region_opt == "(All regions)" else region_opt
+        # ───────────────────────── Seasonality ─────────────────────────
+        with st.expander("Seasonality", expanded=False):
+            st.markdown(
+                """
+                **What this shows:** How prices usually behave during the calendar year.  For each month, it shows the typical price and how much that month varies across years.  
 
-        products = [
-            'Maize Grain (White)', 'Mixed Teff', 'Refined sugar', 'Sorghum',
-            'Wheat Grain', 'Beans (Haricot)', 'Refined Vegetable Oil',
-            'Rice (Milled)', 'Wheat Flour'
-        ]
+                **How to read it:**  
+                - Each vertical black line shows the spread of prices for that month across all years.  
+                - Each horizontal red bar shows the **average price** for that month across the years.  
+                - If the red bars are regularly higher (or lower) in the same months every year, there is a clear seasonal pattern in prices.
+                """
+            )
 
-        tabs = st.tabs(products)
-        for tab, p in zip(tabs, products):
-            with tab:
-                s = prep_monthly_series(panel, product=p, region=region_sel, value_col="value_imputed")
+            # Optional region filter (None = average across regions)
+            all_regions = sorted(panel["admin_1"].dropna().unique())
+            region_opt = st.selectbox("Filter by region", ["(All regions)"] + all_regions)
+            region_sel = None if region_opt == "(All regions)" else region_opt
 
-                # Month plot (own figure)
-                fig_m = month_plot_mpl(s)
-                st.pyplot(fig_m, clear_figure=True)
+            products = [
+                'Maize Grain (White)', 'Mixed Teff', 'Refined sugar', 'Sorghum',
+                'Wheat Grain', 'Beans (Haricot)', 'Refined Vegetable Oil',
+                'Rice (Milled)', 'Wheat Flour'
+            ]
 
-                # PACF (separate figure)
-                fig_p = pacf_mpl(s, nlags=40)
-                st.pyplot(fig_p, clear_figure=True)
-        st.divider()
+            tabs = st.tabs(products)
+            for tab, p in zip(tabs, products):
+                with tab:
+                    s = prep_monthly_series(panel, product=p, region=region_sel, value_col="value_imputed")
+
+                    # Month plot (own figure)
+                    fig_m = month_plot_mpl(s)
+                    st.pyplot(fig_m, clear_figure=True)
+
+            st.divider()
 
         # ───────────────────────── PACF ─────────────────────────
-        st.markdown("### Partial Autocorrelation")
-        st.markdown(
-            """
-            **What this shows:** The partial autocorrelation plot examines the correlation between a data point and its prior observations without taking into account the effect of the intervening time steps. 
-            **How to read it:** Bars outside the shaded band are statistically significant; spikes at lag 12 suggest annual seasonality.
-            """
-        )
+        with st.expander("Monthly correlation", expanded=False):
+            st.markdown(
+                """
+                **What this shows:** Whether today’s prices are linked to prices a certain number of months ago  
+                (1 month ago, 2 months ago, 12 months ago, etc.). It helps us see if the past still influences today’s price, and at which time gaps.  
 
-        products = [
-                    'Maize Grain (White)', 'Mixed Teff', 'Refined sugar', 'Sorghum',
-                    'Wheat Grain', 'Beans (Haricot)', 'Refined Vegetable Oil',
-                    'Rice (Milled)', 'Wheat Flour'
-                ]
+                **How to read it:**  
+                - Each dot/bar shows the strength of the link between today’s price and the price at that lag  
+                (for example, 1 month ago, 2 months ago).  
+                - The blue shaded band is the “noise zone”: bars inside it can be treated as random.  
+                - Bars that stick out above or below the shaded band show a real relationship.  
+                - A clear spike at lag 12 means prices tend to repeat a pattern every 12 months (a yearly seasonal effect).
+                """
+            )
 
-        # Optional region filter (None = average across regions)
-        all_regions = sorted(panel["admin_1"].dropna().unique())
-        region_opt = st.selectbox("Filter by region (optional)", ["(All regions)"] + all_regions, key="expl_region_filter")
-        region_sel = None if region_opt == "(All regions)" else region_opt
+            products = [
+                        'Maize Grain (White)', 'Mixed Teff', 'Refined sugar', 'Sorghum',
+                        'Wheat Grain', 'Beans (Haricot)', 'Refined Vegetable Oil',
+                        'Rice (Milled)', 'Wheat Flour'
+                    ]
 
-        tabs = st.tabs(products)
-        for tab, p in zip(tabs, products):
-            with tab:
-                s = prep_monthly_series(panel, product=p, region=region_sel, value_col="value_imputed")
+            # Optional region filter (None = average across regions)
+            all_regions = sorted(panel["admin_1"].dropna().unique())
+            region_opt = st.selectbox("Filter by region", ["(All regions)"] + all_regions, key="expl_region_filter")
+            region_sel = None if region_opt == "(All regions)" else region_opt
 
-                # Month plot (own figure)
-                fig_m = month_plot_mpl(s)
-                st.pyplot(fig_m, clear_figure=True)
+            tabs = st.tabs(products)
+            for tab, p in zip(tabs, products):
+                with tab:
+                    s = prep_monthly_series(panel, product=p, region=region_sel, value_col="value_imputed")
 
-                # PACF (separate figure)
-                fig_p = pacf_mpl(s, nlags=40)
-                st.pyplot(fig_p, clear_figure=True)
-        st.divider()
+                    # PACF (separate figure)
+                    fig_p = pacf_mpl(s, nlags=40)
+                    st.pyplot(fig_p, clear_figure=True)
+            st.divider()
 
         # ───────────────────────── Seasonal decomposition (admin × product) ─────────────────────────
-        st.markdown("### Seasonal decomposition (admin × product)")
-        st.markdown(
-            """
-            **What this shows:** An additive split of the series into **seasonal**, **trend**, and **remainder** (noise) on a log scale.  
-            **How to read it:**  
-            - A strong repeating shape in *Seasonal* confirms seasonality.  
-            - A smooth *Trend* indicates longer-term movement.  
-            - Large *Remainder* swings can signal shocks, outliers, or missing data.  
-            Tip: toggle **“National median”** to view the national signal, or pick a region/product to focus locally.
-            """
-        )
+        with st.expander("Seasonal decomposition", expanded=False):
+            st.markdown(
+                """
+                **What this shows:** The chart breaks the price series into three parts:  
+                - Seasonal: regular ups and downs that repeat each year  
+                - Trend: the overall direction over time (going up, down, or flat)  
+                - Remainder: the leftover noise that doesn’t follow a pattern  
 
-        colc1, colc2, colc3, colc4 = st.columns([1.2, 1.2, 1, 1])
-        period = colc1.number_input("Seasonal period", min_value=2, max_value=60, value=12, step=1, key="expl_stl_period")
-        recent_years = colc2.number_input("Recent window (years)", min_value=1, max_value=10, value=5, step=1, key="expl_stl_years")
-        shade_imputed = colc3.checkbox("Shade imputed", value=True, key="expl_stl_shade")
-        national_view = colc4.checkbox("National median", value=False, key="expl_stl_nat")
+                **How to read it:**  
+                - If the seasonal line repeats a similar shape each year, there is clear seasonality.  
+                - The trend line shows whether prices are rising, falling, or staying stable.  
+                - Big jumps in the remainder line can point to shocks, unusual events, or data issues.  
 
-        # Restrict to recent window
-        panel_recent = panel.copy()
-        panel_recent["month"] = pd.to_datetime(panel_recent["month"], errors="coerce")
-        start_date = panel_recent["month"].max() - pd.DateOffset(years=int(recent_years))
-        d5 = panel_recent.loc[panel_recent["month"] >= start_date].copy()
+                Tip: toggle “National median” to see the overall picture, or choose a region/product to zoom in locally.
+                """
+            )
 
-        # Pick value column
-        price_col = "value_imputed" if "value_imputed" in d5.columns else ("value_mean" if "value_mean" in d5.columns else "value_median")
+            colc1, colc2, colc3, colc4 = st.columns([1.2, 1.2, 1, 1])
+            period = colc1.number_input("Seasonal period", min_value=2, max_value=60, value=12, step=1, key="expl_stl_period")
+            recent_years = colc2.number_input("Recent window (years)", min_value=1, max_value=10, value=5, step=1, key="expl_stl_years")
+            shade_imputed = colc3.checkbox("Shade imputed", value=True, key="expl_stl_shade")
+            national_view = colc4.checkbox("National median", value=False, key="expl_stl_nat")
 
-        if national_view:
-            admin_label = "National"
-            prod_options = sorted(d5["product"].dropna().unique())
-            prod = st.selectbox("Product", prod_options, index=0, key="expl_stl_product_nat")
+            # Restrict to recent window
+            panel_recent = panel.copy()
+            panel_recent["month"] = pd.to_datetime(panel_recent["month"], errors="coerce")
+            start_date = panel_recent["month"].max() - pd.DateOffset(years=int(recent_years))
+            d5 = panel_recent.loc[panel_recent["month"] >= start_date].copy()
 
-            g = (
-                d5[d5["product"] == prod]
-                .groupby(["month"], as_index=False)
-                .agg(
-                    value=(price_col, "median"),
-                    imputed_any=("impute_method", lambda x: (x != "observed").any() if "impute_method" in d5.columns else False)
+            # Pick value column
+            price_col = "value_imputed" if "value_imputed" in d5.columns else ("value_mean" if "value_mean" in d5.columns else "value_median")
+
+            if national_view:
+                admin_label = "National"
+                prod_options = sorted(d5["product"].dropna().unique())
+                prod = st.selectbox("Product", prod_options, index=0, key="expl_stl_product_nat")
+
+                g = (
+                    d5[d5["product"] == prod]
+                    .groupby(["month"], as_index=False)
+                    .agg(
+                        value=(price_col, "median"),
+                        imputed_any=("impute_method", lambda x: (x != "observed").any() if "impute_method" in d5.columns else False)
+                    )
+                    .rename(columns={"month": "date"})
                 )
-                .rename(columns={"month": "date"})
-            )
-            g["impute_method"] = np.where(g.get("imputed_any", False), "imputed", "observed")
-            g = g[["date", "value", "impute_method"]]
-        else:
-            admins = sorted(d5["admin_1"].dropna().unique())
-            default_admin = admins.index("Oromia") if "Oromia" in admins else 0
-            admin_label = st.selectbox("Region (admin 1)", admins, index=default_admin, key="expl_stl_admin")
+                g["impute_method"] = np.where(g.get("imputed_any", False), "imputed", "observed")
+                g = g[["date", "value", "impute_method"]]
+            else:
+                admins = sorted(d5["admin_1"].dropna().unique())
+                default_admin = admins.index("Oromia") if "Oromia" in admins else 0
+                admin_label = st.selectbox("Region (admin 1)", admins, index=default_admin, key="expl_stl_admin")
 
-            prod_options = sorted(d5.loc[d5["admin_1"] == admin_label, "product"].dropna().unique())
-            prod = st.selectbox("Product", prod_options, index=0, key="expl_stl_product")
+                prod_options = sorted(d5.loc[d5["admin_1"] == admin_label, "product"].dropna().unique())
+                prod = st.selectbox("Product", prod_options, index=0, key="expl_stl_product")
 
-            g = (
-                d5[(d5["admin_1"] == admin_label) & (d5["product"] == prod)]
-                .loc[:, ["month", price_col] + (["impute_method"] if "impute_method" in d5.columns else [])]
-                .rename(columns={"month": "date", price_col: "value"})
-                .sort_values("date")
-                .copy()
-            )
-            if "impute_method" not in g.columns:
-                g["impute_method"] = "observed"
+                g = (
+                    d5[(d5["admin_1"] == admin_label) & (d5["product"] == prod)]
+                    .loc[:, ["month", price_col] + (["impute_method"] if "impute_method" in d5.columns else [])]
+                    .rename(columns={"month": "date", price_col: "value"})
+                    .sort_values("date")
+                    .copy()
+                )
+                if "impute_method" not in g.columns:
+                    g["impute_method"] = "observed"
 
-        def stl_decompose_one(frame: pd.DataFrame, per: int):
-            frame = frame.sort_values("date").copy()
-            if frame["value"].notna().sum() < per * 2:
-                return None
-            s = frame["value"].astype(float).to_numpy()
-            s_log = np.log1p(s)
-            res = STL(s_log, period=per, robust=True).fit()
-            return {
-                "dates": frame["date"].to_numpy(),
-                "log_data": s_log,
-                "seasonal": res.seasonal,
-                "trend": res.trend,
-                "remainder": res.resid,
-                "impute_mask": (frame["impute_method"].values != "observed") if "impute_method" in frame.columns else np.zeros(len(frame), bool),
-                "ymin": float(np.nanmin(s_log)),
-                "ymax": float(np.nanmax(s_log)),
-            }
+            def stl_decompose_one(frame: pd.DataFrame, per: int):
+                frame = frame.sort_values("date").copy()
+                if frame["value"].notna().sum() < per * 2:
+                    return None
+                s = frame["value"].astype(float).to_numpy()
+                s_log = np.log1p(s)
+                res = STL(s_log, period=per, robust=True).fit()
+                return {
+                    "dates": frame["date"].to_numpy(),
+                    "log_data": s_log,
+                    "seasonal": res.seasonal,
+                    "trend": res.trend,
+                    "remainder": res.resid,
+                    "impute_mask": (frame["impute_method"].values != "observed") if "impute_method" in frame.columns else np.zeros(len(frame), bool),
+                    "ymin": float(np.nanmin(s_log)),
+                    "ymax": float(np.nanmax(s_log)),
+                }
 
-        out = stl_decompose_one(g, int(period))
+            out = stl_decompose_one(g, int(period))
 
-        if out is None:
-            st.warning("Not enough data points for STL (need at least ~2 seasonal periods).")
-        else:
-            fig = make_subplots(
-                rows=4, cols=1, shared_xaxes=True, vertical_spacing=0.03,
-                subplot_titles=("Log of Original Data", "Seasonal Component", "Trend Component", "Remainder Component")
-            )
+            if out is None:
+                st.warning("Not enough data points for STL (need at least ~2 seasonal periods).")
+            else:
+                fig = make_subplots(
+                    rows=4, cols=1, shared_xaxes=True, vertical_spacing=0.03,
+                    subplot_titles=("Original Data", "Seasonal Component", "Trend Component", "Remainder Component")
+                )
 
-            # Panel 1
-            fig.add_trace(
-                go.Scatter(
-                    x=out["dates"], y=out["log_data"], mode="lines", line=dict(color="purple"),
-                    name="log1p(data)",
-                    hovertemplate="<b>Log of Original Data</b><br>Date: %{x|%Y-%m-%d}<br>Value: %{y:.3f}<extra></extra>"
-                ),
-                row=1, col=1
-            )
+                # Panel 1
+                fig.add_trace(
+                    go.Scatter(
+                        x=out["dates"], y=out["log_data"], mode="lines", line=dict(color="purple"),
+                        name="log1p(data)",
+                        hovertemplate="<b>Log of Original Data</b><br>Date: %{x|%Y-%m-%d}<br>Value: %{y:.3f}<extra></extra>"
+                    ),
+                    row=1, col=1
+                )
 
-            # Shade imputed
-            if shade_imputed and out["impute_mask"].any():
-                idx = out["dates"]; mask = out["impute_mask"]
-                starts, ends, in_run = [], [], False
-                for i, m in enumerate(mask):
-                    if m and not in_run:
-                        starts.append(i); in_run = True
-                    if in_run and (i == len(mask)-1 or not mask[i+1]):
-                        ends.append(i); in_run = False
-                shapes = []
-                for s_i, e_i in zip(starts, ends):
-                    shapes.append(dict(
-                        type="rect", xref="x", yref="y1",
-                        x0=idx[s_i], x1=idx[e_i],
-                        y0=out["ymin"], y1=out["ymax"],
-                        fillcolor="rgba(0,0,0,0.12)", line=dict(width=0)
-                    ))
-                fig.update_layout(shapes=shapes)
+                # Shade imputed
+                if shade_imputed and out["impute_mask"].any():
+                    idx = out["dates"]; mask = out["impute_mask"]
+                    starts, ends, in_run = [], [], False
+                    for i, m in enumerate(mask):
+                        if m and not in_run:
+                            starts.append(i); in_run = True
+                        if in_run and (i == len(mask)-1 or not mask[i+1]):
+                            ends.append(i); in_run = False
+                    shapes = []
+                    for s_i, e_i in zip(starts, ends):
+                        shapes.append(dict(
+                            type="rect", xref="x", yref="y1",
+                            x0=idx[s_i], x1=idx[e_i],
+                            y0=out["ymin"], y1=out["ymax"],
+                            fillcolor="rgba(0,0,0,0.12)", line=dict(width=0)
+                        ))
+                    fig.update_layout(shapes=shapes)
 
-            # Other panels
-            fig.add_trace(go.Scatter(x=out["dates"], y=out["seasonal"], mode="lines", line=dict(color="#90ED7D"),
-                                     name="seasonal",
-                                     hovertemplate="<b>Seasonal</b><br>Date: %{x|%Y-%m-%d}<br>Value: %{y:.3f}<extra></extra>"),
-                          row=2, col=1)
-            fig.add_trace(go.Scatter(x=out["dates"], y=out["trend"], mode="lines", line=dict(color="#7CB5EC"),
-                                     name="trend",
-                                     hovertemplate="<b>Trend</b><br>Date: %{x|%Y-%m-%d}<br>Value: %{y:.3f}<extra></extra>"),
-                          row=3, col=1)
-            fig.add_trace(go.Scatter(x=out["dates"], y=out["remainder"], mode="lines", line=dict(color="#F7A35C"),
-                                     name="remainder",
-                                     hovertemplate="<b>Remainder</b><br>Date: %{x|%Y-%m-%d}<br>Value: %{y:.3f}<extra></extra>"),
-                          row=4, col=1)
+                # Other panels
+                fig.add_trace(go.Scatter(x=out["dates"], y=out["seasonal"], mode="lines", line=dict(color="#90ED7D"),
+                                        name="seasonal",
+                                        hovertemplate="<b>Seasonal</b><br>Date: %{x|%Y-%m-%d}<br>Value: %{y:.3f}<extra></extra>"),
+                            row=2, col=1)
+                fig.add_trace(go.Scatter(x=out["dates"], y=out["trend"], mode="lines", line=dict(color="#7CB5EC"),
+                                        name="trend",
+                                        hovertemplate="<b>Trend</b><br>Date: %{x|%Y-%m-%d}<br>Value: %{y:.3f}<extra></extra>"),
+                            row=3, col=1)
+                fig.add_trace(go.Scatter(x=out["dates"], y=out["remainder"], mode="lines", line=dict(color="#F7A35C"),
+                                        name="remainder",
+                                        hovertemplate="<b>Remainder</b><br>Date: %{x|%Y-%m-%d}<br>Value: %{y:.3f}<extra></extra>"),
+                            row=4, col=1)
 
-            fig.update_layout(
-                title=f"STL Decomposition — {'National' if national_view else admin_label} · {prod} (log1p), start={start_date.date()}",
-                showlegend=False, autosize=True, height=820, width=None,
-                margin=dict(l=60, r=40, t=70, b=40),
-                hovermode="x unified",
-                xaxis=dict(showspikes=True, spikemode="across", spikesnap="cursor", spikethickness=1),
-            )
-            fig.update_yaxes(title_text="log1p(data)", row=1, col=1)
-            fig.update_yaxes(title_text="seasonal", row=2, col=1)
-            fig.update_yaxes(title_text="trend", row=3, col=1)
-            fig.update_yaxes(title_text="remainder", row=4, col=1)
+                fig.update_layout(
+                    showlegend=False, autosize=True, height=820, width=None,
+                    margin=dict(l=60, r=40, t=70, b=40),
+                    hovermode="x unified",
+                    xaxis=dict(showspikes=True, spikemode="across", spikesnap="cursor", spikethickness=1),
+                )
+                fig.update_yaxes(title_text="log1p(data)", row=1, col=1)
+                fig.update_yaxes(title_text="seasonal", row=2, col=1)
+                fig.update_yaxes(title_text="trend", row=3, col=1)
+                fig.update_yaxes(title_text="remainder", row=4, col=1)
 
-            st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, use_container_width=True)
 
 
 # ------------------------------------------------------------------------------
@@ -643,7 +661,7 @@ def render_forecasting_page():
         st.caption(f"ℹ️ {m}")
 
     st.header("Staples price forecast")
-    st.caption(
+    st.markdown(
         "Forecasts are only shown for region–product combinations with at least 12 "
         "months of history in the training data. CI bands are based on residual "
         "dispersion in the test set."
@@ -718,11 +736,11 @@ def render_forecasting_page():
 # Page 2 – Methodology / Sources
 # ------------------------------------------------------------------------------
 def render_methodology_page():
-    st.markdown("## Methodology")
+    st.header("Methodology")
 
     st.markdown(
     """
-### Data sources
+#### Data sources
 
 This dashboard combines multiple data sources to support robust exploration and forecasting of food prices. 
 The principal datasets are monthly staple food prices from the 
@@ -763,7 +781,7 @@ Note that a **temporary pause** in early 2025 affected FEWS NET reporting; the F
 
     st.markdown(
     """
-### Data processing
+#### Data processing
 
 We standardize units (per kg/liter), retain **retail prices**, and keep the **past five years**. 
 For missing observations, we impute prices in three steps and record both the original value and the method used:
@@ -786,7 +804,7 @@ For each record we keep: `value_orig` (observed), `value_imputed` (final series)
 
     st.markdown(
         """
-### Data availability
+#### Data availability
 
 - We generate forecasts only for region–product pairs with **≥ 12 months** of observations.  
 - The visualization below shows months with/without data for each product in the selected region.
@@ -879,13 +897,13 @@ For each record we keep: `value_orig` (observed), `value_imputed` (final series)
 
     st.markdown(
         """
-### Forecasting model
+#### Forecasting model
 
 - A **global XGBoost** model is trained on all region–product pairs.  
 - A **per-product Ridge regression** “bias-correction” layer refines residual errors.  
 - Forecasts are produced only for pairs with **≥ 12 months** of training data.
 
-### Metrics and confidence intervals
+#### Metrics and confidence intervals
 
 We evaluate performance on a hold-out test set using:
 
@@ -902,7 +920,7 @@ We display an **80% confidence interval (CI)** around forecasts, meaning that un
 # ------------------------------------------------------------------------------
 def main():
     st.title("🌾 Ethiopia Food Prices Dashboard")
-    st.markdown("#### An interactive dashboard to track and forecast staple food prices across regions in Ethiopia.")
+    st.markdown("##### An interactive dashboard to track and forecast staple food prices across regions in Ethiopia.")
 
     
     # Load main panel for data-driven pages
