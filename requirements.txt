@@ -1,14 +1,14 @@
-# conda or pip
-pandas
-numpy
-xgboost
-scikit-learn
-optuna
-joblib
-streamlit
-altair
-plotly
-requests
-statsmodels
-matplotlib
-pyarrow
+# From the repo root
+micromamba create -n foodsec_py311 -c conda-forge \
+  python=3.11 \
+  statsforecast \
+  pandas \
+  numpy \
+  scikit-learn \
+  xgboost \
+  streamlit \
+  mlflow \
+  pyarrow \
+  statsmodels
+
+micromamba activate foodsec_py311

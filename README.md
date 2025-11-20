@@ -1,20 +1,28 @@
-# Food Security
+# 🌾 Ethiopia Food Prices – Exploration & Forecasting
 
-**What**: Ethiopia Food & Market Monitor (FEWS NET prices + simple alerts).
+This repository contains an end-to-end pipeline and dashboard for exploring and forecasting staple food prices across regions in Ethiopia.
 
-**Why**: Track staple food price dynamics by market to inform ag & livestock programming.
+The project:
 
-**Quickstart**
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-streamlit run app/streamlit_app.py
+- Cleans and harmonises monthly price data from multiple sources.
+- Builds an analysis-ready “Tier A” panel of staple food prices.
+- Benchmarks several time-series models (Naive, ARIMA/SARIMA, XGBoost, hybrids).
+- Serves an interactive Streamlit dashboard for exploration & 3-month forecasts.
 
-**Config**: see .env.example and app/.streamlit/config.toml.
+---
 
-**Data sources**: FEWS NET FDW API (public).
+## 1. Project Overview
 
-**Testing**: make test
+**Goal:**  
+Provide a lightweight, transparent forecasting tool for staple food prices in Ethiopia, focused on a short-term **3-month planning horizon** for humanitarian / food security use cases.
 
-**Deploy**: Streamlit Community Cloud.
+**Key design choices:**
 
-**Limitations**: API coverage varies by commodity/market; occasional schema drift.
+- Unit of analysis: `(admin_1, product)` (region–product pairs).
+- Temporal unit: monthly data.
+- Target: `value_imputed` (retail prices per standard unit, cleaned & imputed).
+- Operational forecast model: **Naive (last observed value) with horizon = 3 months**.
+
+A full exploration + modelling notebook exists (`model_comparison_and_export.py` logic), but the dashboard only uses the final chosen model + comparison table.
+
+---
