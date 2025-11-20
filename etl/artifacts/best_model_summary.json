@@ -1,0 +1,11 @@
+{
+  "timestamp": "2025-11-20T12:04:56.923392",
+  "horizon_months": 3,
+  "best_model": "sf_Naive_h3",
+  "metrics": {
+    "mae": 5.788157593030124,
+    "rmse": 8.657716407486449,
+    "smape": 6.0347394912032675
+  },
+  "note": "Best model by sMAPE (then RMSE) among StatsForecast baselines and global XGB / XGB-hybrid. Use this model as the operational default for the Streamlit forecasting dashboard."
+}

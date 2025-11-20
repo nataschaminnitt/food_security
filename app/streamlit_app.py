@@ -25,15 +25,17 @@ st.set_page_config(
     page_icon="🌾"
 )
 
-BASE_DIR = Path(__file__).resolve().parents[1]
-ROOT = BASE_DIR
+APP_DIR = Path(__file__).resolve().parent          # /.../food_security/app
+PROJECT_ROOT = APP_DIR.parent                      # /.../food_security
 
-PANEL_PATH = ROOT / "data" / "processed" / "ethiopia_foodprices_model_panel.parquet"
+PANEL_PATH = PROJECT_ROOT / "data" / "processed" / "ethiopia_foodprices_model_panel.parquet"
 
-# Artifacts directory for forecasting
-ART_DIR = BASE_DIR / "etl" / "artifacts"
-P_TEST = ART_DIR / "xgb_staples_test_predictions.parquet"
-P_FUTURE = ART_DIR / "xgb_staples_future_forecast.parquet"
+# Artifacts directory for forecasting + model comparison
+ART_DIR = PROJECT_ROOT / "etl" / "artifacts"
+P_TEST = ART_DIR / "naive_h3_test_predictions.parquet"
+P_FUTURE = ART_DIR / "naive_h3_future_forecast.parquet"
+MODEL_RESULTS_PATH = ART_DIR / "model_results.parquet"
+MODEL_RESULTS_PATH = ART_DIR / "model_comparison_results.csv"
 
 # ArcGIS admin-1 GeoJSON (layer 3)
 ADMIN1_GEOJSON_URL = (
@@ -97,6 +99,17 @@ def load_admin1_geojson():
         region_name = props.get("REGIONNAME") or props.get("adm1_name") or ""
         props["admin_key"] = _norm(region_name)
     return gj
+
+@st.cache_data(show_spinner=False)
+def load_model_results():
+    if MODEL_RESULTS_PATH.exists():
+        df = pd.read_csv(MODEL_RESULTS_PATH)
+        # if you saved with model as index, make it a column
+        if df.index.name is not None:
+            df = df.reset_index().rename(columns={df.index.name: "model"})
+        return df
+    return None
+
 
 # ------------------------------------------------------------------------------
 # Helpers
@@ -171,7 +184,7 @@ def render_exploration_page(panel: pd.DataFrame) -> None:
 
                 **How to read it:**  
                 - Choose one or more products.  
-                - Switch between the **national view** (one line per product, showing the typical price across regions) and a **single-region view**.  
+                - Switch between the national view (one line per product, showing the typical price across regions) and a single-region view.  
                 - Steady climbs or drops show long-term changes.  
                 - Sudden jumps often reflect shocks (for example, a bad harvest or conflict) or gaps in the data.
                 """
@@ -568,7 +581,12 @@ def load_forecast_data():
 
     # ----- keep only series that we actually forecast for -----
     eligible_pairs = future_df[["admin_1", "product"]].dropna().drop_duplicates()
-    test_df = test_df.merge(eligible_pairs, on=["admin_1", "product"], how="inner", suffixes=("", "_elig"))
+    test_df = test_df.merge(
+        eligible_pairs,
+        on=["admin_1", "product"],
+        how="inner",
+        suffixes=("", "_elig"),
+    )
 
     used_msgs = []
 
@@ -589,7 +607,7 @@ def load_forecast_data():
     actual_col = _pick_col(test_df, ACTUAL_COL_CANDIDATES)
     if actual_col is None:
         test_df["y_actual"] = np.nan
-        used_msgs.append("Test actuals: none found (CI from residuals will be unavailable).")
+        used_msgs.append("Test actuals: none found (uncertainty band will be unavailable).")
     else:
         if actual_col != "y_actual":
             test_df = test_df.rename(columns={actual_col: "y_actual"})
@@ -617,19 +635,58 @@ def load_forecast_data():
         sigma_global = 0.0
         s_by_prod = pd.Series(dtype=float)
 
-    # attach sigma to future
-    future_df = future_df.merge(s_by_prod.rename("sigma"), on="product", how="left")
-    future_df["sigma"] = (
-        future_df["sigma"]
+    # Attach per-step volatility (sigma_step) to future
+    future_df = future_df.merge(
+        s_by_prod.rename("sigma_step"),
+        on="product",
+        how="left",
+    )
+    future_df["sigma_step"] = (
+        future_df["sigma_step"]
         .fillna(sigma_global)
         .replace([np.inf, -np.inf], sigma_global)
         .astype(float)
     )
 
-    # CI band (95% ~ 1.96σ)
-    k = 1.96
-    future_df["y_lo"] = np.maximum(0.0, future_df["y_pred"] - k * future_df["sigma"])
-    future_df["y_hi"] = future_df["y_pred"] + k * future_df["sigma"]
+    # ----- fan chart: horizon-dependent 10th/90th quantiles under random walk -----
+    # Last historical month per (admin_1, product) from test_df (where actuals exist)
+    if test_df["y_actual"].notna().any():
+        last_hist = (
+            test_df[test_df["y_actual"].notna()]
+            .groupby(["admin_1", "product"], observed=False)["month"]
+            .max()
+            .rename("last_hist_month")
+        )
+        future_df = future_df.merge(last_hist, on=["admin_1", "product"], how="left")
+    else:
+        future_df["last_hist_month"] = pd.NaT
+
+    # Horizon step in months (1, 2, 3, ...)
+    future_df["h_step"] = 1.0
+    has_last = future_df["last_hist_month"].notna()
+    if has_last.any():
+        # Convert both dates to "month index" = year * 12 + month
+        m_cur = (
+            future_df.loc[has_last, "month"].dt.year * 12
+            + future_df.loc[has_last, "month"].dt.month
+        )
+        m_last = (
+            future_df.loc[has_last, "last_hist_month"].dt.year * 12
+            + future_df.loc[has_last, "last_hist_month"].dt.month
+        )
+        h_vals = (m_cur - m_last).astype("float64")
+        future_df.loc[has_last, "h_step"] = h_vals.clip(lower=1.0)
+
+    # sigma at horizon h: sigma_h = sigma_step * sqrt(h)
+    future_df["sigma_h"] = future_df["sigma_step"] * np.sqrt(future_df["h_step"])
+
+    # 10th/90th band: y_pred ± z90 * sigma_h
+    z90 = 1.2815515655446004  # ~90% quantile for standard normal
+    future_df["y_lo"] = np.maximum(
+        0.0,
+        future_df["y_pred"] - z90 * future_df["sigma_h"],
+    )
+    future_df["y_hi"] = future_df["y_pred"] + z90 * future_df["sigma_h"]
 
     # Build combined viz frame
     hist = (
@@ -650,6 +707,7 @@ def load_forecast_data():
 
     return df_vis, used_msgs
 
+
 def render_forecasting_page():
     try:
         df_vis, used_msgs = load_forecast_data()
@@ -662,9 +720,10 @@ def render_forecasting_page():
 
     st.header("Staples price forecast")
     st.markdown(
-        "Forecasts are only shown for region–product combinations with at least 12 "
-        "months of history in the training data. CI bands are based on residual "
-        "dispersion in the test set."
+        "Forecasts are shown for region–product combinations where we have at least one "
+        "recorded price. The forecast uses a naïve model (last observed price) and the "
+        "uncertainty band assumes price changes behave like a random walk based on "
+        "historical forecast errors."
     )
 
     admins  = sorted(df_vis["admin_1"].dropna().unique())
@@ -684,31 +743,53 @@ def render_forecasting_page():
     )
 
     if d.empty:
-        st.warning("No forecast available for this region / product (likely <12 months of history).")
+        st.warning("No price data available yet for this region / product.")
         return
+
+    # Allow user to toggle the fan chart
+    show_fan = st.checkbox(
+        "Show forecast uncertainty band (10th–90th percentile)",
+        value=True,
+    )
 
     fig = go.Figure()
 
-    # CI band (future part)
-    if d["y_lo"].notna().any() and d["y_hi"].notna().any():
+    # Fan chart (future part): band only where y_lo / y_hi are defined (i.e. future rows)
+    if show_fan and d["y_lo"].notna().any() and d["y_hi"].notna().any():
         fig.add_trace(
             go.Scatter(
-                x=d["month"], y=d["y_lo"], mode="lines",
-                line=dict(width=0), showlegend=False, hoverinfo="skip", name="Lower CI",
+                x=d["month"],
+                y=d["y_lo"],
+                mode="lines",
+                line=dict(width=0),
+                showlegend=False,
+                hoverinfo="skip",
+                name="Lower band",
             )
         )
         fig.add_trace(
             go.Scatter(
-                x=d["month"], y=d["y_hi"], mode="lines",
-                line=dict(width=0), fill="tonexty", opacity=0.2, name="Uncertainty band",
-                hovertemplate=("Month=%{x|%Y-%m}<br>CI upper: %{y:.2f}<extra></extra>"),
+                x=d["month"],
+                y=d["y_hi"],
+                mode="lines",
+                line=dict(width=0),
+                fill="tonexty",
+                opacity=0.2,
+                name="Uncertainty band (10th–90th)",
+                hovertemplate=(
+                    "Month=%{x|%Y-%m}"
+                    "<br>Upper band: %{y:.2f}"
+                    "<extra></extra>"
+                ),
             )
         )
 
     # Forecast
     fig.add_trace(
         go.Scatter(
-            x=d["month"], y=d["y_pred"], mode="lines+markers",
+            x=d["month"],
+            y=d["y_pred"],
+            mode="lines+markers",
             name="Forecast",
             hovertemplate="Month=%{x|%Y-%m}<br>Forecast=%{y:.2f}<extra></extra>",
         )
@@ -719,18 +800,23 @@ def render_forecasting_page():
         mask_hist = d["y_actual"].notna()
         fig.add_trace(
             go.Scatter(
-                x=d.loc[mask_hist, "month"], y=d.loc[mask_hist, "y_actual"],
-                mode="markers", name="Actual",
+                x=d.loc[mask_hist, "month"],
+                y=d.loc[mask_hist, "y_actual"],
+                mode="markers",
+                name="Actual",
                 hovertemplate="Month=%{x|%Y-%m}<br>Actual=%{y:.2f}<extra></extra>",
             )
         )
 
     fig.update_layout(
-        height=480, margin=dict(l=10, r=10, t=30, b=10),
-        xaxis_title="Month", yaxis_title="Price (ETB)",
+        height=480,
+        margin=dict(l=10, r=10, t=30, b=10),
+        xaxis_title="Month",
+        yaxis_title="Price (ETB)",
     )
 
     st.plotly_chart(fig, use_container_width=True)
+
 
 # ------------------------------------------------------------------------------
 # Page 2 – Methodology / Sources
@@ -762,7 +848,7 @@ Note that a **temporary pause** in early 2025 affected FEWS NET reporting; the F
     st.write("")
 
     try:
-        IMG_DIR = ROOT / "img"
+        IMG_DIR = PROJECT_ROOT / "img"
         logos = [
             IMG_DIR / "fewsnet.jpeg",
             IMG_DIR / "wfp.png",
@@ -771,12 +857,13 @@ Note that a **temporary pause** in early 2025 affected FEWS NET reporting; the F
             IMG_DIR / "chirps.png",
             IMG_DIR / "acled.png",
         ]
+
         cols = st.columns(len(logos))
         for col, path in zip(cols, logos):
             with col:
                 st.image(str(path), use_container_width=True)
-    except Exception:
-        st.caption("Logos unavailable.")
+    except Exception as e:
+        st.caption(f"Logos unavailable. ({e})")
 
 
     st.markdown(
@@ -806,8 +893,7 @@ For each record we keep: `value_orig` (observed), `value_imputed` (final series)
         """
 #### Data availability
 
-- We generate forecasts only for region–product pairs with **≥ 12 months** of observations.  
-- The visualization below shows months with/without data for each product in the selected region.
+The visualization below shows months with/without data for each product in the selected region.
 """
     )
 
@@ -899,21 +985,30 @@ For each record we keep: `value_orig` (observed), `value_imputed` (final series)
         """
 #### Forecasting model
 
-- A **global XGBoost** model is trained on all region–product pairs.  
-- A **per-product Ridge regression** “bias-correction” layer refines residual errors.  
-- Forecasts are produced only for pairs with **≥ 12 months** of training data.
+We tested several forecasting models (Naive, Seasonal Naive, moving averages, ARIMA, SARIMA).
+On the recent data, a simple naïve model, using the last observed monthly price as the best forecast for the next 3 months, consistently had the lowest error.
+Because food prices in Ethiopia are highly volatile and show limited stable seasonality, more complex models did not improve accuracy over this baseline.
+We therefore use the naïve model and focus on transparent uncertainty bands rather than more opaque, complex models.
 
 #### Metrics and confidence intervals
 
 We evaluate performance on a hold-out test set using:
 
-- **MAE (Mean Absolute Error):** average absolute difference between predictions and actual prices (lower is better).  
-- **RMSE (Root Mean Squared Error):** emphasizes larger errors (lower is better).  
-- **sMAPE (Symmetric Mean Absolute Percentage Error):** scale-free percentage error robust to zeros (lower is better).
+- **MAE** (Mean Absolute Error): average absolute difference between predictions and actual prices (lower is better).  
+- **RMSE** (Root Mean Squared Error): emphasizes larger errors (lower is better).  
+- **MAPE** (Mean Absolute Percentage Error): error displayed as a percentage (lower is better).
+- **sMAPE** (Symmetric Mean Absolute Percentage Error): scale-free percentage error robust to zeros (lower is better).
 
-We display an **80% confidence interval (CI)** around forecasts, meaning that under model assumptions, roughly 4 out of 5 realized values are expected to fall within the shaded band. Narrower bands indicate higher certainty; wider bands indicate greater uncertainty.
 """
     )
+
+    model_results = load_model_results()
+    if model_results is not None:
+        st.dataframe(
+            model_results.style.format({"mae": "{:.2f}", "rmse": "{:.2f}", "smape": "{:.2f}"})
+        )
+    else:
+        st.caption("Model comparison table not available – run the model comparison script first.")
 
 # ------------------------------------------------------------------------------
 # Main app
